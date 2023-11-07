@@ -7,7 +7,7 @@ import streamlit as st
 def create_layout(elements):
 
     for i, element in enumerate(elements):
-        simple_layout(key=i + 123456789, **element)
+        simple_layout(key=i, **element)
 
 
 def simple_layout(
