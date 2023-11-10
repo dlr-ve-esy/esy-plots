@@ -21,18 +21,21 @@ class Metadatum(Enum):
     Unit = auto()
 
 
-def column_metadata(label: str, unit: str = None) -> Dict[Metadatum, str]:
+def column_metadata(label: str, unit: str = "") -> Dict[Metadatum, str]:
     """
     Creates a metadata dictionary from given input
 
     Args:
-        label: full label of the column - as to be displayed for axis descriptions
+        label: full label of the column - as to be displayed for axis descriptions - must not be empty
         unit: of the associated data
 
     Returns:
         dictionary of the metadata
     """
-    return {Metadatum.Label: label, Metadatum.Unit: unit}
+    if not label or (isinstance(label, str) and not label.replace(" ", "")):
+        raise DataPreparationException("Column label must not be missing, empty or whitespaces only.")
+
+    return {Metadatum.Label: str(label), Metadatum.Unit: str(unit)}
 
 
 class DataPreparer:
@@ -98,39 +101,122 @@ class DataPreparer:
         Raises:
             DataPreparationException: if group name already exists
         """
-        if group in self.datasets.keys():
-            raise DataPreparationException(f"Group name '{group}' already exists.")
+        self._ensure_valid_group(group)
+        self._ensure_valid_key_metadata(key_metadata)
 
         key_columns = [column_name for column_name in key_metadata.keys()]
         empty_df = pd.DataFrame(columns=key_columns)
         empty_df.set_index(key_columns, inplace=True)
 
-        self.datasets[group] = {
+        self.datasets[str(group)] = {
             _Type.Data: empty_df,
             _Type.Metadata: key_metadata,
         }
 
-    def add_value_column(self, group: str, column: pd.Series, metadata: Dict[Metadatum, str]) -> None:
+    def _ensure_valid_group(self, group: str) -> None:
         """
-        Add a value column to an existing data group with the associated metadata
+        Raises DataPreparationException if group name is not unique or invalid
 
         Args:
-            group: name of data group to add the column to
-            column: data of the column - (multi)index must match that of the data group
-            metadata: metadata description of the column
+            group: name to be tested
+
+        Raises:
+            DataPreparationException: if group name is already taken or invalid
+        """
+        if not group or (isinstance(group, str) and not group.replace(" ", "")):
+            raise DataPreparationException("Group name must not be none or empty or whitespace only.")
+
+        if group in self.datasets.keys():
+            raise DataPreparationException(f"Group name '{group}' already exists.")
+
+    @staticmethod
+    def _ensure_valid_key_metadata(metadata: Dict[str, Dict[Metadatum, str]]) -> None:
+        """
+        Raises DataPreparationException if metadata are empty or invalid
+
+        Args:
+            metadata: of key columns to be tested
+
+        Raises:
+            DataPreparationException: if metadata are empty or invalid
+        """
+        if len(metadata) < 1:
+            raise DataPreparationException("Metadata for a group must have at least one key column")
+        for column, metadata_of_column in metadata.items():
+            if not column or not isinstance(column, str):
+                raise DataPreparationException(f"Column name must be a string but was: '{column}'")
+            if isinstance(column, str) and not column.replace(" ", ""):
+                raise DataPreparationException("Column name string must not be empty or whitespaces only.")
+            DataPreparer._ensure_valid_column_metadata(metadata_of_column)
+
+    @staticmethod
+    def _ensure_valid_column_metadata(metadata: Dict[Metadatum, str]) -> None:
+        """
+        Raises DataPreparationException if column metadata are not in the required format
+
+        Args:
+            metadata: of one column to be tested
+
+        Raises:
+            DataPreparationException: if metadata are empty or invalid
+        """
+        error_msg = "Column metadata invalid! Use function 'column_metadata' to create them!"
+        if Metadatum.Label not in metadata.keys():
+            raise DataPreparationException(error_msg)
+        for key in metadata.keys():
+            if key not in [e for e in Metadatum]:
+                raise DataPreparationException(error_msg)
+
+    # def add_value_column(self, group: str, column: pd.Series, metadata: Dict[Metadatum, str]) -> None:
+    #     """
+    #     Add a value column to an existing data group with the associated metadata
+    #
+    #     Args:
+    #         group: name of data group to add the column to
+    #         column: data of the column - (multi)index must match that of the data group
+    #         metadata: metadata description of the column
+    #
+    #     Raises:
+    #         DataPreparationException:
+    #             * if group name was not yet initialised,
+    #             * if column data index does not match that of the group
+    #     """
+    #     self._assert_group_name_exists(group)
+    #     container = self.datasets[group][_Type.Data]
+    #     self._assert_indexes_match(container, column)
+    #     column = self._ensure_is_series(column)
+    #
+    #     self.datasets[group][_Type.Data] = pd.concat([container, column], axis=1)
+    #     self.datasets[group][_Type.Metadata].update({column.name: metadata})
+
+    def add_values(self, group: str, series: pd.Series, metadata: Dict[Metadatum, str] = None) -> None:
+        """
+        Add value rows to a new or existing column in an existing data group
+
+        Args:
+            group: data group to add the rows to
+            series: rows for one column - (multi)index must match that of the data group
+            metadata: metadata description of the column as created by 'column_metadata' - only required if the column is new, otherwise ignored
 
         Raises:
             DataPreparationException:
                 * if group name was not yet initialised,
                 * if column data index does not match that of the group
+                * if a new column is specified and metadata are missing or invalid
+                * if a dataframe with more than one column is passed
         """
         self._assert_group_name_exists(group)
         container = self.datasets[group][_Type.Data]
-        self._assert_indexes_match(container, column)
-        column = self._ensure_is_series(column)
+        self._assert_indexes_match(container, series)
+        series = self._ensure_is_series(series)
 
-        self.datasets[group][_Type.Data] = pd.concat([container, column], axis=1)
-        self.datasets[group][_Type.Metadata].update({column.name: metadata})
+        if series.name not in list(container.columns):
+            if not metadata:
+                raise DataPreparationException(f"No metadata specified for new column '{series.name}'.")
+            self._ensure_valid_column_metadata(metadata)
+            self.datasets[group][_Type.Metadata].update({series.name: metadata})
+
+        self.datasets[group][_Type.Data] = pd.concat([container, pd.DataFrame(series)], axis=0)
 
     def _assert_group_name_exists(self, group) -> None:
         """
@@ -181,29 +267,3 @@ class DataPreparer:
                 raise DataPreparationException(f"Given data must be a Series of single-column DataFrame!")
             series = series.squeeze()
         return series
-
-    def add_value_rows(self, group: str, rows: pd.Series, metadata: Dict[Metadatum, str] = None) -> None:
-        """
-        Add rows of values to a (new or existing) column in an existing data group
-
-        Args:
-            group: data group to add the rows to
-            rows: rows for one column - (multi)index must match that of the data group
-            metadata: metadata description of the column - only required if the column is not yet, otherwise ignored
-
-        Raises:
-            DataPreparationException:
-                * if group name was not yet initialised,
-                * if column data index does not match that of the group
-                * if a new column is specified and metadata are missing
-        """
-        self._assert_group_name_exists(group)
-        container = self.datasets[group][_Type.Data]
-        self._assert_indexes_match(container, rows)
-        rows = self._ensure_is_series(rows)
-
-        if rows.name not in list(container.columns):
-            if not metadata:
-                raise DataPreparationException(f"No metadata specified for new column '{rows.name}'.")
-            self.datasets[group][_Type.Metadata].update({rows.name: metadata})
-        self.datasets[group][_Type.Data] = pd.concat([container, pd.DataFrame(rows)], axis=0)
